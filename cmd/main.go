@@ -1,39 +1,39 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+
+	"shortlinks/internal/pkg/firebase"
+	"shortlinks/internal/pkg/utils"
 )
-
-var shortURLs = make(map[string]string)
-
-func generateRandomString(length int) (string, error) {
-	buffer := make([]byte, length)
-	_, err := rand.Read(buffer)
-	if err != nil {
-		return "", err
-	}
-	return base64.URLEncoding.EncodeToString(buffer)[:length], nil
-}
 
 type ShortenRequest struct {
 	URL string `json:"url" binding:"required"`
 }
 
 func main() {
+	_, client, ctx := firebase.Firebase()
+
+	defer client.Close()
+
 	r := gin.Default()
 
 	r.GET("/g/:slug", func(c *gin.Context) {
 		short := c.Param("slug")
 
-		if url, ok := shortURLs[short]; ok {
-			c.Redirect(http.StatusMovedPermanently, url)
-		} else {
-			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		dsnap, err := client.Collection("shortlinks").Doc(short).Get(ctx)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
 		}
+		shortlink := dsnap.Data()
+		if shortlink == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		c.Redirect(http.StatusMovedPermanently, shortlink["original"].(string))
 	})
 
 	r.POST("/g", func(c *gin.Context) {
@@ -44,14 +44,20 @@ func main() {
 			return
 		}
 
-		randomString, err := generateRandomString(4)
-
+		randomString, err := utils.GenerateRandomString(4)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 
-		shortURLs[randomString] = request.URL
+		_, err = client.Collection("shortlinks").Doc(randomString).Set(ctx, map[string]interface{}{
+			"short":    randomString,
+			"original": request.URL,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 
 		c.JSON(http.StatusOK, gin.H{
 			"short":    randomString,
